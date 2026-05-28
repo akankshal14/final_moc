@@ -1,0 +1,7 @@
+PUNCTUAL="Punctual"
+DELAYED="Delayed"
+DANGEROUSLY_DELAYED="Dangerously Delayed"
+INTERNAL_SERVER_ERROR="Internal Server Error"
+CYCLE_ONE=1
+CYCLE_TWO=2
+CYCLE_THREE=3

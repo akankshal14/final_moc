@@ -1,0 +1,534 @@
+from fastapi import FastAPI,HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+
+from src.database.session import session
+from src.utils.seed import run_seeds
+from src.utils.logger import logger
+
+from src.router.user_router import router as auth_router
+from src.router.slot_router import router as slot_router
+from src.router.admin_router import router as admin_router
+
+# ================================
+# MAIN.PY
+# ================================
+
+from src.exceptions.exception_handler import (
+   
+    global_exception_handler
+)
+
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = session()
+    try:
+        run_seeds(db)
+        logger.info("Seeding completed")
+    except Exception as e:
+        logger.error(f"Seeding failed: {str(e)}")
+    finally:
+        db.close()
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_exception_handler(
+    HTTPException,
+    global_exception_handler
+)
+
+
+
+
+# Unknown Exceptions
+app.add_exception_handler(
+    Exception,
+    global_exception_handler
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth_router)
+app.include_router(slot_router)
+app.include_router(admin_router)
+
+
+
+
+@app.get("/")
+def root():
+    return {"message": "MOC system"}
+
+
+
+class AppException(Exception):
+
+    status_code = 500
+    msg = "Internal Server Error"
+
+    def __init__(self, msg=None):
+
+        if msg:
+            self.msg = msg
+        super().__init__(self.msg)
+
+
+class BadRequestException(AppException):
+
+    status_code = 400
+    msg = "Bad Request"
+
+
+class NotFoundException(AppException):
+
+    status_code = 404
+    msg = "Resource Not Found"
+
+
+class UnauthorizedException(AppException):
+
+    status_code = 401
+    msg = "Unauthorized"
+
+
+class ForbiddenException(AppException):
+
+    status_code = 403
+    msg = "Forbidden"
+
+
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
+
+from src.exceptions.custom_exceptions import (
+    AppException
+)
+
+from src.utils.logger import logger
+
+
+async def global_exception_handler(
+    request: Request,
+    exc: Exception
+):
+
+    # custom exceptions
+    if isinstance(exc, AppException):
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "status_code": exc.status_code,
+                "msg": exc.msg
+            }
+        )
+
+    # fastapi HTTP exceptions
+    if isinstance(exc, HTTPException):
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "status_code": exc.status_code,
+                "msg": exc.detail
+            }
+        )
+
+    # unknown exceptions
+    logger.exception(str(exc))
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status_code": 500,
+            "msg": str(exc)
+        }
+    )
+
+
+
+#Pinkl3mon
+
+
+import boto3
+from src.utils.config import AWS_ACCESS_KEY_ID, AWS_BUCKET_NAME, AWS_REGION, AWS_SECRET_ACCESS_KEY
+import uuid
+s3 = boto3.client('s3', 
+        aws_access_key_id=AWS_ACCESS_KEY_ID, 
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY, 
+        region_name=AWS_REGION
+    )
+
+def pre_signed_url(degree_certificate):
+    file_name=f"{uuid.uuid4()}_{degree_certificate.filename}"
+    s3.upload_fileobj(
+        degree_certificate.file,
+        AWS_BUCKET_NAME,
+        file_name
+    )
+    return file_name
+
+def view_certificate(file_name):
+    presigned_url = s3.generate_presigned_url(
+        ClientMethod = 'get_object',
+        Params={
+            "Bucket":AWS_BUCKET_NAME,
+            "Key":file_name
+        },
+        ExpiresIn = 3600
+    )
+    
+    return presigned_url
+
+
+https://docs.aws.amazon.com/boto3/latest/
+
+degree_certificate: UploadFile = Form(..)
+
+
+
+@router.post('/signup')
+async def signup(title: TitleEnum = Form(...),first_name:str = Form(...), surname:str = Form(...),degree:str = Form(...),
+                degree_certificate:UploadFile=File(...),email:EmailStr=Form(...),password:str=Form(...),db:Session=Depends(get_db)):
+
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+    aws_upload = pre_signed_url(degree_certificate)
+    aws_download = view_certificate(aws_upload)
+    year = get_graduation_year(aws_download)
+    grad_year = year.text.strip()
+    db_user=User(title=title,first_name=first_name, surname=surname,degree=degree,
+                degree_certificate=aws_upload,year_of_passing=grad_year,
+                email=email,password=hash_password(password))
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    logger.info('user created successfully')
+    candidate_role = db.query(Role).filter(Role.role == 'candidate').first()
+    user_role = UserRole(user_id=db_user.id, role_id=candidate_role.id)
+    db.add(user_role)
+    db.commit()
+    db.refresh(user_role)
+    await send_mail_to_admins(db)
+    logger.info('email sent successfully')
+    return {"message": "signup successful and an email was sent to all admins", "view_file":aws_download}
+
+
+
+@router.post('/signup')
+async def signup(title: TitleEnum = Form(...),first_name:str = Form(...), surname:str = Form(...),degree:str = Form(...),
+                degree_certificate:UploadFile=File(...),email:EmailStr=Form(...),password:str=Form(...),db:Session=Depends(get_db)):
+
+
+
+
+
+
+
+
+
+from fastapi import APIRouter,HTTPException,Depends,Form
+from typing import Annotated
+from sqlalchemy.orm import Session
+from src.schema.user_schema import UserCreate,TokenResponse,UserLogin,UserResponse
+from src.database.session import get_db
+from src.service.user_service import register_user,login_user
+router = APIRouter(prefix="/auth", tags=["Auth"])
+
+@router.post("/register",response_model=UserResponse)
+def register( salutation:Salutation=Form(...),
+    first_name:str=Form(...),
+    last_name:str=Form(...),
+    degree:Degree=Form(...),
+    degree_certificate:UploadFile=File(...),
+    passing_year:int=Form(...),
+    email:EmailStr=Form(...),
+    password:str=Form(...),db:Session=Depends(get_db)):
+    try:
+        return register_user(db,salutation,first_name,last_name,degree,degree_certificate,passing_year,email,password) 
+        
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(500,"Internal Server Error")
+    
+    
+@router.post("/login", response_model=TokenResponse)
+def login(user:Annotated[UserLogin, Form()], db: Session = Depends(get_db)):
+    try:
+        return login_user(db, user.email, user.password)
+    
+    except Exception as e:
+        raise HTTPException(500,"Internal Server Error")
+    
+import boto3
+from src.utils.config import AWS_ACCESS_KEY_ID, AWS_BUCKET_NAME, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY
+import uuid
+s3 = boto3.client('s3', 
+        aws_access_key_id=AWS_ACCESS_KEY_ID, 
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY, 
+        region_name=AWS_REGION_NAME
+    )
+
+def pre_signed_url(degree_certificate):
+    file_name=f"{uuid.uuid4()}_{degree_certificate.filename}"
+    s3.upload_fileobj(
+        degree_certificate.file,
+        AWS_BUCKET_NAME,
+        file_name
+    )
+    return file_name
+
+def view_certificate(file_name):
+    presigned_url = s3.generate_presigned_url(
+        ClientMethod = 'get_object',
+        Params={
+            "Bucket":AWS_BUCKET_NAME,
+            "Key":file_name
+        },
+        ExpiresIn = 3600
+    )
+    
+    return presigned_url
+
+
+
+https://docs.aws.amazon.com/boto3/latest/guide/s3-uploading-files.html
+
+
+
+total_years = round(
+    (submitted_at - enrollment.passed_at).days / 365,
+    2
+)
+
+
+import boto3
+import uuid
+
+from src.utils.config import (
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_BUCKET_NAME,
+    AWS_REGION_NAME
+)
+
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION_NAME
+)
+
+
+def upload_certificate(degree_certificate):
+
+    file_name = f"{uuid.uuid4()}_{degree_certificate.filename}"
+
+    s3.upload_fileobj(
+        degree_certificate.file,
+        AWS_BUCKET_NAME,
+        file_name
+    )
+
+    return file_name
+
+
+def generate_view_url(file_name):
+
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={
+            "Bucket": AWS_BUCKET_NAME,
+            "Key": file_name
+        },
+        ExpiresIn=3600
+    )
+
+
+from sqlalchemy.orm import Session
+
+from src.model.user_model import User
+
+
+def get_user_by_email(db: Session, email: str):
+
+    return db.query(User).filter(
+        User.email == email
+    ).first()
+
+
+def create_user(
+    db: Session,
+    user_data
+):
+
+    db.add(user_data)
+
+    db.commit()
+
+    db.refresh(user_data)
+
+    return user_data
+
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from src.repository.user_repo import (
+    get_user_by_email,
+    create_user
+)
+
+from src.utils.s3_utils import (
+    upload_certificate,
+    generate_view_url
+)
+
+from src.model.user_model import User
+
+from src.utils.hash_password import hash_password
+
+
+def register_user(
+    db: Session,
+    salutation,
+    first_name,
+    last_name,
+    degree,
+    degree_certificate,
+    passing_year,
+    email,
+    password
+):
+
+    existing_user = get_user_by_email(
+        db,
+        email
+    )
+
+    if existing_user:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+
+    uploaded_file_name = upload_certificate(
+        degree_certificate
+    )
+
+    view_url = generate_view_url(
+        uploaded_file_name
+    )
+
+    user = User(
+        salutation=salutation,
+        first_name=first_name,
+        last_name=last_name,
+        degree=degree,
+        degree_certificate=uploaded_file_name,
+        passing_year=passing_year,
+        email=email,
+        password=hash_password(password)
+    )
+
+    created_user = create_user(
+        db,
+        user
+    )
+
+    return {
+        "message": "User registered successfully",
+        "user": created_user,
+        "certificate_url": view_url
+    }
+
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    UploadFile,
+    File,
+    HTTPException
+)
+
+from sqlalchemy.orm import Session
+
+from pydantic import EmailStr
+
+from src.database.session import get_db
+
+from src.service.user_service import (
+    register_user
+)
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Auth"]
+)
+
+
+@router.post("/register")
+def register(
+
+    salutation: str = Form(...),
+
+    first_name: str = Form(...),
+
+    last_name: str = Form(...),
+
+    degree: str = Form(...),
+
+    degree_certificate: UploadFile = File(...),
+
+    passing_year: int = Form(...),
+
+    email: EmailStr = Form(...),
+
+    password: str = Form(...),
+
+    db: Session = Depends(get_db)
+):
+
+    try:
+
+        return register_user(
+            db,
+            salutation,
+            first_name,
+            last_name,
+            degree,
+            degree_certificate,
+            passing_year,
+            email,
+            password
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print(e)
+
+        raise HTTPException(
+            status_code=500,
+            detail="Internal Server Error"
+        )
